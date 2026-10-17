@@ -5,6 +5,8 @@
 #include <Adafruit_Sensor.h>
 #include <SPI.h>
 #include <RadioLib.h>
+#include<ControlPacket.h>
+#include<string.h>
 
 #define servoMin 500
 #define servoMax 2400
@@ -18,14 +20,12 @@ constexpr uint8_t UART_RX = 4;
 constexpr uint8_t UART_TX = 5;
 constexpr uint32_t UART_BAUD = 115200;
 HardwareSerial espLink(1);
-char recieveBuffer[64];
-size_t recieveLengh = 0;
-bool discardLine = false;
+uint8_t receiveBuffer[sizeof(ControlPacket)];
+size_t receiveLength = 0;
+bool validCommandReceived = false;
+uint32_t lastReceiveTime = 0;
 
-uint32_t lastSendTime = 0;
-uint32_t sendCount = 0;
-
-constexpr uint8_t pwm_freq = 20000;
+constexpr uint32_t pwm_freq = 20000;
 constexpr uint8_t pwm_bits = 8;
 
 constexpr uint8_t left_phase = 16;
@@ -64,7 +64,7 @@ public:
 
     void setup() {
         digitalWrite(enablePin,LOW);
-        digitalWrite(phasePin,OUTPUT);
+        digitalWrite(phasePin,LOW);
         pinMode(enablePin,OUTPUT);
         pinMode(phasePin,OUTPUT);
 
@@ -83,28 +83,64 @@ public:
 MotorDrive leftmotor{left_phase,left_enable,left_ch};
 MotorDrive rightmotor{right_phase,right_enable,right_ch};
 
-void recieveData(){
-    while(espLink.available() > 0){
-        char c = static_cast<char>(espLink.read());
-        if(c=='\r') continue;
+void handlePacket(const ControlPacket& packet) {
+    if (packet.leftPower < -255 || packet.leftPower > 255 ||
+        packet.rightPower < -255 || packet.rightPower > 255) {
+        return;
+    }
 
-        if(c == '\n'){
-            if(!discardLine && recieveLengh > 0){
-                recieveBuffer[recieveLengh] = '\0';
-                Serial.print("recieved:");
-                Serial.println(recieveBuffer);
-            }
-            recieveLengh = 0;
-            discardLine = false;
+    for (uint8_t i = 0; i < 6; i++) {
+        if (packet.servoAngle[i] > 180) {
+            return;
+        }
+    }
+
+    validCommandReceived = true;
+    lastReceiveTime = millis();
+
+    Serial.printf(
+        "受信 #%u : left=%d right=%d front=%u\n",
+        static_cast<unsigned int>(packet.sequence),
+        static_cast<int>(packet.leftPower),
+        static_cast<int>(packet.rightPower),
+        static_cast<unsigned int>(packet.servoAngle[0])
+    );
+
+    // 通信確認後、ここにモーター・サーボ制御を追加する
+}
+
+void receiveData() {
+    while (espLink.available() > 0) {
+        receiveBuffer[receiveLength++] =
+            static_cast<uint8_t>(espLink.read());
+
+        if (receiveLength < sizeof(ControlPacket)) {
             continue;
         }
-        if(discardLine) continue;
 
-        if(recieveLengh < sizeof(recieveBuffer) - 1){
-            recieveBuffer[recieveLengh++] = c;
-        } else{
-            recieveLengh = 0;
-            discardLine = true;
+        ControlPacket packet;
+        memcpy(&packet, receiveBuffer, sizeof(packet));
+
+        uint16_t expectedCRC = calculateCRC(
+            receiveBuffer,
+            offsetof(ControlPacket, crc)
+        );
+
+        if (packet.start1 == 0xAA &&
+            packet.start2 == 0x55 &&
+            packet.crc == expectedCRC) {
+
+            handlePacket(packet);
+            receiveLength = 0;
+        } else {
+            // データがずれた場合、1バイトずらして再確認
+            memmove(
+                receiveBuffer,
+                receiveBuffer + 1,
+                sizeof(receiveBuffer) - 1
+            );
+
+            receiveLength = sizeof(receiveBuffer) - 1;
         }
     }
 }
@@ -130,5 +166,10 @@ void setup(){
 }
 
 void loop(){
+    receiveData();
 
+    if(!validCommandReceived||millis()-lastReceiveTime >=300){
+        ledcWrite(left_ch,0);
+        ledcWrite(right_ch,0);
+    }
 }
