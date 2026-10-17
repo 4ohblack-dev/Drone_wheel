@@ -6,8 +6,24 @@
 #include <SPI.h>
 #include <RadioLib.h>
 
+#define servoMin 500
+#define servoMax 2400
+
 constexpr uint8_t SDApin = 21;
 constexpr uint8_t SCLpin = 22;
+
+//UART
+constexpr char deviceName[] = "wheel";
+constexpr uint8_t UART_RX = 4;
+constexpr uint8_t UART_TX = 5;
+constexpr uint32_t UART_BAUD = 115200;
+HardwareSerial espLink(1);
+char recieveBuffer[64];
+size_t recieveLengh = 0;
+bool discardLine = false;
+
+uint32_t lastSendTime = 0;
+uint32_t sendCount = 0;
 
 constexpr uint8_t pwm_freq = 20000;
 constexpr uint8_t pwm_bits = 8;
@@ -20,10 +36,6 @@ constexpr uint8_t right_enable = 19;
 constexpr uint8_t right_ch = 1;
 
 Adafruit_PWMServoDriver pca = Adafruit_PWMServoDriver(0x40);
-#define servoMin 500
-#define servoMax 2400
-int angle;
-
 
 enum servoJoint:uint8_t{
     front = 0,
@@ -71,9 +83,39 @@ public:
 MotorDrive leftmotor{left_phase,left_enable,left_ch};
 MotorDrive rightmotor{right_phase,right_enable,right_ch};
 
+void recieveData(){
+    while(espLink.available() > 0){
+        char c = static_cast<char>(espLink.read());
+        if(c=='\r') continue;
+
+        if(c == '\n'){
+            if(!discardLine && recieveLengh > 0){
+                recieveBuffer[recieveLengh] = '\0';
+                Serial.print("recieved:");
+                Serial.println(recieveBuffer);
+            }
+            recieveLengh = 0;
+            discardLine = false;
+            continue;
+        }
+        if(discardLine) continue;
+
+        if(recieveLengh < sizeof(recieveBuffer) - 1){
+            recieveBuffer[recieveLengh++] = c;
+        } else{
+            recieveLengh = 0;
+            discardLine = true;
+        }
+    }
+}
+
 void setup(){
     Serial.begin(115200);
     Wire.begin(SDApin,SCLpin);
+    espLink.begin(UART_BAUD,SERIAL_8N1,UART_RX,UART_TX);
+    Serial.print("UART begin");
+    Serial.println(deviceName);
+
     if(!pca.begin()){
         Serial.println("PCA9685 not found");
         while(true){
