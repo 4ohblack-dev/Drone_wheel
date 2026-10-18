@@ -58,9 +58,10 @@ void servo_move(servoJoint joint,int angle){
 
 class MotorDrive {
 public:
-    uint8_t phasePin;
-    uint8_t enablePin;
-    uint8_t pwmch;
+    MotorDrive(uint8_t phase,uint8_t enable, uint8_t pwmch_) 
+      : phasePin(phase),
+        enablePin(enable),
+        pwmch(pwmch_){}
 
     void setup() {
         digitalWrite(enablePin,LOW);
@@ -73,11 +74,16 @@ public:
         ledcAttachPin(enablePin,pwmch);
     }
 
-    void drive(uint8_t phasePin,uint8_t pwmch,int val) {
+    void drive(int val) {
         val = constrain(val,-255,255);
         digitalWrite(phasePin,val < 0 ? HIGH : LOW);
         ledcWrite(pwmch,abs(val));           
     }
+
+private:
+    uint8_t phasePin;
+    uint8_t enablePin;
+    uint8_t pwmch;
 };
 
 MotorDrive leftmotor{left_phase,left_enable,left_ch};
@@ -129,17 +135,14 @@ void receiveData() {
         if (packet.start1 == 0xAA &&
             packet.start2 == 0x55 &&
             packet.crc == expectedCRC) {
-
             handlePacket(packet);
             receiveLength = 0;
         } else {
-            // データがずれた場合、1バイトずらして再確認
             memmove(
                 receiveBuffer,
                 receiveBuffer + 1,
                 sizeof(receiveBuffer) - 1
             );
-
             receiveLength = sizeof(receiveBuffer) - 1;
         }
     }
